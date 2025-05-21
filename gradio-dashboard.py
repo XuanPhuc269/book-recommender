@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import os
 from dotenv import load_dotenv
 
 from langchain_community.document_loaders import TextLoader
@@ -11,6 +12,8 @@ import gradio as gr
 
 load_dotenv()
 
+CHROMA_DB_DIR = "chroma_db"
+
 books = pd.read_csv("books_with_emotions.csv")
 books["large_thumbnail"] = books["thumbnail"] + "&fife=w800"
 books["large_thumbnail"] = np.where(
@@ -19,10 +22,13 @@ books["large_thumbnail"] = np.where(
     books["large_thumbnail"],
 )
 
-raw_documents = TextLoader("tagged_description.txt").load()
-text_splitter = CharacterTextSplitter(separator="\n", chunk_size=0, chunk_overlap=0)
-documents = text_splitter.split_documents(raw_documents)
-db_books = Chroma.from_documents(documents, OpenAIEmbeddings())
+if os.path.exists(CHROMA_DB_DIR):
+    db_books = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=OpenAIEmbeddings())
+else:
+    raw_documents = TextLoader("tagged_description.txt").load()
+    text_splitter = CharacterTextSplitter(separator="\n", chunk_size=0, chunk_overlap=0)
+    documents = text_splitter.split_documents(raw_documents)
+    db_books = Chroma.from_documents(documents, OpenAIEmbeddings(), persist_directory=CHROMA_DB_DIR)
 
 
 def retrieve_semantic_recommendations(
@@ -65,20 +71,20 @@ def recommend_books(
     results = []
 
     for _, row in recommendations.iterrows():
-        description = row["description"]
-        truncated_desc_split = description.split()
-        truncated_description = " ".join(truncated_desc_split[:30]) + "..."
-
-        authors_split = row["authors"].split(";")
+        # Handle NaN values in the "authors" column
+        authors = row["authors"] if pd.notna(row["authors"]) else "Unknown Author"
+        authors_split = authors.split(";")
+        
         if len(authors_split) == 2:
             authors_str = f"{authors_split[0]} and {authors_split[1]}"
         elif len(authors_split) > 2:
             authors_str = f"{', '.join(authors_split[:-1])}, and {authors_split[-1]}"
         else:
-            authors_str = row["authors"]
+            authors_str = authors_split[0]
 
-        caption = f"{row['title']} by {authors_str}: {truncated_description}"
-        results.append((row["large_thumbnail"], caption))
+        # Combine title and description into the caption
+        title_caption = f"{row['title']} by {authors_str}\n\n{row['description']}"
+        results.append((row["large_thumbnail"], title_caption))  
     return results
 
 categories = ["All"] + sorted(books["simple_categories"].unique())
@@ -88,13 +94,14 @@ with gr.Blocks(theme = gr.themes.Glass()) as dashboard:
     gr.Markdown("# Semantic book recommender")
 
     with gr.Row():
-        user_query = gr.Textbox(label = "Please enter a description of a book:",
-                                placeholder = "e.g., A story about forgiveness")
-        category_dropdown = gr.Dropdown(choices = categories, label = "Select a category:", value = "All")
-        tone_dropdown = gr.Dropdown(choices = tones, label = "Select an emotional tone:", value = "All")
+        user_query = gr.Textbox(label="Please enter a description of a book:",
+                                placeholder="e.g., A story about forgiveness")
+        category_dropdown = gr.Dropdown(choices=categories, label="Select a category:", value="All")
+        tone_dropdown = gr.Dropdown(choices=tones, label="Select an emotional tone:", value="All")
         submit_button = gr.Button("Find recommendations")
 
     gr.Markdown("## Recommendations")
+
     output = gr.Gallery(label = "Recommended books", columns = 8, rows = 2)
 
     submit_button.click(fn = recommend_books,
